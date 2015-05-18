@@ -3,8 +3,8 @@ require 'sidekiq/api'
 
 module Sidekiq
   class Debounce
-    def call(worker, msg, _queue, redis_pool)
-      @worker = worker
+    def call(worker_class, msg, _queue, redis_pool)
+      @worker = worker_class.constantize
       @msg = msg
 
       return yield unless debounce?
@@ -15,19 +15,23 @@ module Sidekiq
 
         # Reschedule the old job to when this new job is scheduled for
         # Or yield if there isn't one scheduled yet
-        jid = scheduled_jid ? reschedule(scheduled_jid, @msg['at']) : yield
-
-        store_expiry(conn, jid, @msg['at'])
-        return false if scheduled_jid
-        jid
+        if scheduled_jid
+          jid = reschedule(scheduled_jid, @msg['at'])
+          store_expiry(conn, jid)
+          false
+        else
+          job = yield
+          store_expiry(conn, job.fetch('jid'))
+          job
+        end
       end
     end
 
     private
 
-    def store_expiry(conn, jid, time)
+    def store_expiry(conn, jid)
       conn.set(debounce_key, jid)
-      conn.expireat(debounce_key, time.to_i)
+      conn.expireat(debounce_key, @msg['at'].to_i)
     end
 
     def debounce_key
